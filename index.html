@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>相鉄 他社線 運行情報ティッカー</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --fg: #e8eefc;
+    --accent: #67b7ff;
+    --muted: #a8b3c7;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Sans", "Noto Sans JP", Arial, sans-serif;
+  }
+  header {
+    padding: 12px 16px;
+    display: flex; gap: 12px; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid #1b2538;
+  }
+  .brand { font-weight: 700; letter-spacing: .2px; }
+  .controls { display: flex; gap: 8px; align-items: center; }
+  button {
+    background: #15213a; color: var(--fg); border: 1px solid #213055;
+    border-radius: 10px; padding: 8px 12px; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.1); }
+  .meta { color: var(--muted); font-size: 12px; }
+  .ticker-wrap {
+    position: relative; overflow: hidden; border-bottom: 1px solid #1b2538;
+    background: linear-gradient(180deg, #0d1528, #0b1220);
+  }
+  .ticker {
+    display: inline-flex; gap: 24px; white-space: nowrap;
+    align-items: center; padding: 10px 0;
+    animation: scroll 60s linear infinite;
+  }
+  .ticker.paused { animation-play-state: paused; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 10px; border-radius: 999px;
+    background: #14223c; border: 1px solid #24345a; color: var(--fg);
+  }
+  .chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  .chip a { color: var(--fg); text-decoration: none; }
+  .chip a:hover { text-decoration: underline; }
+  @keyframes scroll {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-50%); }
+  }
+  /* 二重レンダリングで無限ループ感を滑らかに */
+  .lane { display: inline-flex; gap: 24px; padding-left: 16px; }
+  footer { padding: 10px 16px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">相鉄「他社線運行情報」ティッカー</div>
+    <div class="controls">
+      <button id="refreshBtn">今すぐ更新</button>
+      <span class="meta" id="meta"></span>
+    </div>
+  </header>
+
+  <div class="ticker-wrap" id="tickerWrap" title="ホバーで一時停止・タップでリンク">
+    <div class="ticker" id="ticker"></div>
+  </div>
+
+  <footer>
+    出典: 相鉄公式サイト「他社線運行情報」 / 更新間隔: 2分 / タップで元情報へ
+  </footer>
+
+<script>
+const API_URL = "http://localhost:3000/api/other-route"; // ←サーバーURLに合わせて変更
+const ticker = document.getElementById("ticker");
+const meta = document.getElementById("meta");
+const wrap = document.getElementById("tickerWrap");
+const refreshBtn = document.getElementById("refreshBtn");
+
+let timerId = null;
+let lastDataKey = "";
+
+function itemToChip(item) {
+  const text = item.text;
+  const link = item.link || "https://www.sotetsu.co.jp/train/status/other-route/";
+  const chip = document.createElement("span");
+  chip.className = "chip";
+  chip.innerHTML = `
+    <span class="dot" aria-hidden="true"></span>
+    <a href="${link}" target="_blank" rel="noopener">${escapeHtml(text)}</a>
+  `;
+  return chip;
+}
+
+function renderTicker(items) {
+  ticker.innerHTML = "";
+  const lane1 = document.createElement("div");
+  const lane2 = document.createElement("div");
+  lane1.className = "lane";
+  lane2.className = "lane";
+
+  const data = items.length ? items : [{ text: "現在、他社線の重要なお知らせは取得できませんでした（サイトの更新待ち／構造変更の可能性）。", link: null }];
+
+  data.forEach(it => {
+    lane1.appendChild(itemToChip(it));
+  });
+  // 無限スクロール感のため同じ内容をもう一回
+  data.forEach(it => {
+    lane2.appendChild(itemToChip(it));
+  });
+
+  ticker.appendChild(lane1);
+  ticker.appendChild(lane2);
+
+  // アイテム数に応じて速度を少し可変（長すぎると速く）
+  const seconds = Math.max(30, Math.min(90, data.length * 6));
+  ticker.style.animationDuration = seconds + "s";
+}
+
+async function fetchData() {
+  try {
+    const r = await fetch(API_URL, { cache: "no-store" });
+    if (!r.ok) throw new Error("fetch failed " + r.status);
+    const json = await r.json();
+
+    const key = JSON.stringify(json.items.map(i => i.text).slice(0, 50));
+    if (key !== lastDataKey) {
+      renderTicker(json.items);
+      lastDataKey = key;
+    }
+    meta.textContent = `最終更新: ${new Date().toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" })} / 件数: ${json.count}`;
+  } catch (e) {
+    console.error(e);
+    meta.textContent = "取得エラー。接続やCORS、サーバーのログを確認してください。";
+  }
+}
+
+function startAutoRefresh() {
+  if (timerId) clearInterval(timerId);
+  // 2分ごとに更新（JST前提）
+  timerId = setInterval(fetchData, 120000);
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+// Hoverで一時停止（スマホは長押しで選択→実質停止）
+wrap.addEventListener("mouseenter", () => ticker.classList.add("paused"));
+wrap.addEventListener("mouseleave", () => ticker.classList.remove("paused"));
+
+refreshBtn.addEventListener("click", fetchData);
+
+// 初期ロード
+fetchData();
+startAutoRefresh();
+</script>
+</body>
+</html>
